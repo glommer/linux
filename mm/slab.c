@@ -3710,9 +3710,12 @@ EXPORT_SYMBOL(__kmalloc);
  * Free an object which was previously allocated from this
  * cache.
  */
-void kmem_cache_free(struct kmem_cache *cachep, void *objp)
+void kmem_cache_free(struct kmem_cache *s, void *objp)
 {
 	unsigned long flags;
+	struct kmem_cache *cachep = virt_to_cache(objp);
+
+	VM_BUG_ON(!slab_equal_or_parent(cachep, s));
 
 	local_irq_save(flags);
 	debug_check_no_locks_freed(objp, cachep->object_size);
