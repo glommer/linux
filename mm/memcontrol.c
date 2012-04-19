@@ -429,6 +429,8 @@ struct mem_cgroup *mem_cgroup_from_css(struct cgroup_subsys_state *s)
 #include <net/sock.h>
 #include <net/ip.h>
 
+struct static_key memcg_kmem_enabled_key;
+
 static bool mem_cgroup_is_root(struct mem_cgroup *memcg);
 static int memcg_charge_kmem(struct mem_cgroup *memcg, gfp_t gfp, u64 size);
 static void memcg_uncharge_kmem(struct mem_cgroup *memcg, u64 size);
@@ -595,6 +597,16 @@ void __memcg_kmem_free_page(struct page *page, int order)
 	memcg_uncharge_kmem(memcg, size);
 	mem_cgroup_put(memcg);
 }
+
+static void disarm_kmem_keys(struct mem_cgroup *memcg)
+{
+	if (memcg->kmem_accounted)
+		static_key_slow_dec(&memcg_kmem_enabled_key);
+}
+#else
+static void disarm_kmem_keys(struct mem_cgroup *memcg)
+{
+}
 #endif /* CONFIG_MEMCG_KMEM */
 
 #if defined(CONFIG_INET) && defined(CONFIG_MEMCG_KMEM)
@@ -609,6 +621,12 @@ static void disarm_sock_keys(struct mem_cgroup *memcg)
 {
 }
 #endif
+
+static void disarm_static_keys(struct mem_cgroup *memcg)
+{
+	disarm_sock_keys(memcg);
+	disarm_kmem_keys(memcg);
+}
 
 static void drain_all_stock_async(struct mem_cgroup *memcg);
 
@@ -4081,6 +4099,24 @@ static ssize_t mem_cgroup_read(struct cgroup *cont, struct cftype *cft,
 	len = scnprintf(str, sizeof(str), "%llu\n", (unsigned long long)val);
 	return simple_read_from_buffer(buf, nbytes, ppos, str, len);
 }
+
+static void memcg_update_kmem_limit(struct mem_cgroup *memcg, u64 val)
+{
+#ifdef CONFIG_MEMCG_KMEM
+	/*
+	 * Once enabled, can't be disabled. We could in theory disable it if we
+	 * haven't yet created any caches, or if we can shrink them all to
+	 * death. But it is not worth the trouble.
+	 */
+	mutex_lock(&set_limit_mutex);
+	if (!memcg->kmem_accounted && val != RESOURCE_MAX) {
+		static_key_slow_inc(&memcg_kmem_enabled_key);
+		memcg->kmem_accounted = true;
+	}
+	mutex_unlock(&set_limit_mutex);
+#endif
+}
+
 /*
  * The user of this function is...
  * RES_LIMIT.
@@ -4118,15 +4154,7 @@ static int mem_cgroup_write(struct cgroup *cont, struct cftype *cft,
 			ret = res_counter_set_limit(&memcg->kmem, val);
 			if (ret)
 				break;
-			/*
-			 * Once enabled, can't be disabled. We could in theory
-			 * disable it if we haven't yet created any caches, or
-			 * if we can shrink them all to death.
-			 *
-			 * But it is not worth the trouble
-			 */
-			if (!memcg->kmem_accounted && val != RESOURCE_MAX)
-				memcg->kmem_accounted = true;
+			memcg_update_kmem_limit(memcg, val);
 		} else
 			return -EINVAL;
 		break;
@@ -4996,7 +5024,7 @@ static void free_work(struct work_struct *work)
 	 * to move this code around, and make sure it is outside
 	 * the cgroup_lock.
 	 */
-	disarm_sock_keys(memcg);
+	disarm_static_keys(memcg);
 	if (size < PAGE_SIZE)
 		kfree(memcg);
 	else
