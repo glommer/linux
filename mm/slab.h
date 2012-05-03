@@ -81,6 +81,12 @@ static inline bool slab_equal_or_parent(struct kmem_cache *s,
 {
 	return (p == s) || (p == s->memcg_params.parent);
 }
+
+static inline void kmem_cache_verify_dead(struct kmem_cache *s)
+{
+	if (unlikely(s->memcg_params.dead))
+		schedule_work(&s->memcg_params.cache_shrinker);
+}
 #else
 static inline bool cache_match_memcg(struct kmem_cache *cachep,
 				     struct mem_cgroup *memcg)
@@ -100,6 +106,10 @@ static inline bool slab_equal_or_parent(struct kmem_cache *s,
 					struct kmem_cache *p)
 {
 	return true;
+}
+
+static inline void kmem_cache_verify_dead(struct kmem_cache *s)
+{
 }
 #endif
 #endif

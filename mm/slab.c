@@ -3558,6 +3558,8 @@ static inline void __cache_free(struct kmem_cache *cachep, void *objp,
 	}
 
 	ac->entry[ac->avail++] = objp;
+
+	kmem_cache_verify_dead(cachep);
 }
 
 /**
