@@ -287,7 +287,8 @@ struct mem_cgroup {
 	 * Should the accounting and control be hierarchical, per subtree?
 	 */
 	bool use_hierarchy;
-	bool kmem_accounted;
+
+	unsigned long kmem_accounted; /* See KMEM_ACCOUNTED_*, below */
 
 	bool		oom_lock;
 	atomic_t	under_oom;
@@ -339,6 +340,38 @@ struct mem_cgroup {
 	struct tcp_memcontrol tcp_mem;
 #endif
 };
+
+enum {
+	KMEM_ACCOUNTED_THIS, /* accounted by this cgroup itself */
+	KMEM_ACCOUNTED_PARENT, /* accounted by any of its parents. */
+};
+
+#ifdef CONFIG_MEMCG_KMEM
+static bool memcg_kmem_account(struct mem_cgroup *memcg)
+{
+	return !test_and_set_bit(KMEM_ACCOUNTED_THIS, &memcg->kmem_accounted);
+}
+
+static bool memcg_kmem_clear_account(struct mem_cgroup *memcg)
+{
+	return test_and_clear_bit(KMEM_ACCOUNTED_THIS, &memcg->kmem_accounted);
+}
+
+static bool memcg_kmem_is_accounted(struct mem_cgroup *memcg)
+{
+	return test_bit(KMEM_ACCOUNTED_THIS, &memcg->kmem_accounted);
+}
+
+static void memcg_kmem_account_parent(struct mem_cgroup *memcg)
+{
+	set_bit(KMEM_ACCOUNTED_PARENT, &memcg->kmem_accounted);
+}
+
+static void memcg_kmem_clear_account_parent(struct mem_cgroup *memcg)
+{
+	clear_bit(KMEM_ACCOUNTED_PARENT, &memcg->kmem_accounted);
+}
+#endif /* CONFIG_MEMCG_KMEM */
 
 /* Stuffs for move charges at task migration. */
 /*
@@ -602,7 +635,7 @@ EXPORT_SYMBOL(__memcg_kmem_free_page);
 
 static void disarm_kmem_keys(struct mem_cgroup *memcg)
 {
-	if (memcg->kmem_accounted)
+	if (test_bit(KMEM_ACCOUNTED_THIS, &memcg->kmem_accounted))
 		static_key_slow_dec(&memcg_kmem_enabled_key);
 }
 #else
@@ -4041,17 +4074,54 @@ static ssize_t mem_cgroup_read(struct cgroup *cont, struct cftype *cft,
 static void memcg_update_kmem_limit(struct mem_cgroup *memcg, u64 val)
 {
 #ifdef CONFIG_MEMCG_KMEM
-	/*
-	 * Once enabled, can't be disabled. We could in theory disable it if we
-	 * haven't yet created any caches, or if we can shrink them all to
-	 * death. But it is not worth the trouble.
-	 */
+	struct mem_cgroup *iter;
+
 	mutex_lock(&set_limit_mutex);
-	if (!memcg->kmem_accounted && val != RESOURCE_MAX) {
+	if ((val != RESOURCE_MAX) && memcg_kmem_account(memcg)) {
+
+		/*
+		 * Once enabled, can't be disabled. We could in theory disable
+		 * it if we haven't yet created any caches, or if we can shrink
+		 * them all to death. But it is not worth the trouble
+		 */
 		static_key_slow_inc(&memcg_kmem_enabled_key);
-		memcg->kmem_accounted = true;
+
+		if (!memcg->use_hierarchy)
+			goto out;
+
+		for_each_mem_cgroup_tree(iter, memcg) {
+			if (iter == memcg)
+				continue;
+			memcg_kmem_account_parent(iter);
+		}
+	} else if ((val == RESOURCE_MAX) && memcg_kmem_clear_account(memcg)) {
+
+		if (!memcg->use_hierarchy)
+			goto out;
+
+		for_each_mem_cgroup_tree(iter, memcg) {
+			struct mem_cgroup *parent;
+
+			if (iter == memcg)
+				continue;
+			/*
+			 * We should only have our parent bit cleared if none
+			 * of our parents are accounted. The transversal order
+			 * of our iter function forces us to always look at the
+			 * parents.
+			 */
+			parent = parent_mem_cgroup(iter);
+			for (; parent != memcg; parent = parent_mem_cgroup(iter))
+				if (memcg_kmem_is_accounted(parent))
+					goto noclear;
+			memcg_kmem_clear_account_parent(iter);
+noclear:
+			continue;
+		}
 	}
+out:
 	mutex_unlock(&set_limit_mutex);
+
 #endif
 }
 
