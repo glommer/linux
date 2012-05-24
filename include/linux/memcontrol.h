@@ -21,6 +21,7 @@
 #define _LINUX_MEMCONTROL_H
 #include <linux/cgroup.h>
 #include <linux/vm_event_item.h>
+#include <linux/hardirq.h>
 
 struct mem_cgroup;
 struct page_cgroup;
@@ -409,6 +410,11 @@ struct sock;
 #ifdef CONFIG_MEMCG_KMEM
 void sock_update_memcg(struct sock *sk);
 void sock_release_memcg(struct sock *sk);
+
+#define memcg_kmem_on 1
+bool __memcg_kmem_new_page(gfp_t gfp, void *handle, int order);
+void __memcg_kmem_commit_page(struct page *page, void *handle, int order);
+void __memcg_kmem_free_page(struct page *page, int order);
 #else
 static inline void sock_update_memcg(struct sock *sk)
 {
@@ -416,6 +422,81 @@ static inline void sock_update_memcg(struct sock *sk)
 static inline void sock_release_memcg(struct sock *sk)
 {
 }
+
+#define memcg_kmem_on 0
+static inline bool
+__memcg_kmem_new_page(gfp_t gfp, void *handle, int order)
+{
+	return false;
+}
+
+static inline void  __memcg_kmem_free_page(struct page *page, int order)
+{
+}
+
+static inline void
+__memcg_kmem_commit_page(struct page *page, struct mem_cgroup *handle,
+			      int order)
+{
+}
 #endif /* CONFIG_MEMCG_KMEM */
+
+/**
+ * memcg_kmem_new_page: verify if a new kmem allocation is allowed.
+ * @gfp: the gfp allocation flags.
+ * @handle: a pointer to the memcg this was charged against.
+ * @order: allocation order.
+ *
+ * returns true if the memcg where the current task belongs can hold this
+ * allocation.
+ *
+ * We return true automatically if this allocation is not to be accounted to
+ * any memcg.
+ */
+static __always_inline
+bool memcg_kmem_new_page(gfp_t gfp, void *handle, int order)
+{
+	if (!memcg_kmem_on)
+		return true;
+	if (!(gfp & __GFP_KMEMCG) || (gfp & __GFP_NOFAIL))
+		return true;
+	if (in_interrupt() || (!current->mm) || (current->flags & PF_KTHREAD))
+		return true;
+	return __memcg_kmem_new_page(gfp, handle, order);
+}
+
+/**
+ * memcg_kmem_free_page: uncharge pages from memcg
+ * @page: pointer to struct page being freed
+ * @order: allocation order.
+ *
+ * there is no need to specify memcg here, since it is embedded in page_cgroup
+ */
+static __always_inline
+void memcg_kmem_free_page(struct page *page, int order)
+{
+	if (memcg_kmem_on)
+		__memcg_kmem_free_page(page, order);
+}
+
+/**
+ * memcg_kmem_commit_page: embeds correct memcg in a page
+ * @handle: a pointer to the memcg this was charged against.
+ * @page: pointer to struct page recently allocated
+ * @handle: the memcg structure we charged against
+ * @order: allocation order.
+ *
+ * Needs to be called after memcg_kmem_new_page, regardless of success or
+ * failure of the allocation. if @page is NULL, this function will revert the
+ * charges. Otherwise, it will commit the memcg given by @handle to the
+ * corresponding page_cgroup.
+ */
+static __always_inline
+void memcg_kmem_commit_page(struct page *page, struct mem_cgroup *handle,
+				 int order)
+{
+	if (memcg_kmem_on)
+		__memcg_kmem_commit_page(page, handle, order);
+}
 #endif /* _LINUX_MEMCONTROL_H */
 
