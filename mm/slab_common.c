@@ -98,21 +98,19 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align
 	WARN_ON(strchr(name, ' '));	/* It confuses parsers */
 #endif
 
+	s = __kmem_cache_alias(name, size, align, flags, ctor);
+	if (s)
+		goto oops;
+
 	n = kstrdup(name, GFP_KERNEL);
 	if (!n)
 		goto oops;
 
 	s = __kmem_cache_create(n, size, align, flags, ctor);
 
-	if (s) {
-		/*
-		 * Check if the slab has actually been created and if it was a
-		 * real instatiation. Aliases do not belong on the list
-		 */
-		if (s->refcount == 1)
-			list_add(&s->list, &slab_caches);
-
-	} else
+	if (s)
+		list_add(&s->list, &slab_caches);
+	else
 		kfree(n);
 
 oops:
