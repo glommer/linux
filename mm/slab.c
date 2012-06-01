@@ -1578,6 +1578,30 @@ static void __init set_up_list3s(struct kmem_cache *cachep, int index)
 	}
 }
 
+struct kmem_cache *create_kmalloc_cache(char *name, int size, int flags)
+{
+	struct kmem_cache *s = kmem_cache_zalloc(kmem_cache, GFP_KERNEL);
+	int r = -ENOMEM;
+
+	if (!s)
+		goto panic;
+
+	s->name = name;
+	s->size = s->object_size = size;
+	s->align = ARCH_KMALLOC_MINALIGN;
+	s->flags = flags | ARCH_KMALLOC_FLAGS;
+
+	r = __kmem_cache_create(s);
+
+	if (r)
+		goto panic;
+
+	list_add(&s->list, &slab_caches);
+	return s;
+panic:
+	panic("Failed to create kmalloc cache %s. Size=%d Code=%d\n", name, size, r);
+}
+
 /*
  * Initialisation.  Called after the page allocator have been initialised and
  * before smp_init().
@@ -1673,22 +1697,13 @@ void __init kmem_cache_init(void)
 	 * bug.
 	 */
 
-	sizes[INDEX_AC].cs_cachep = __kmem_cache_create(names[INDEX_AC].name,
-					sizes[INDEX_AC].cs_size,
-					ARCH_KMALLOC_MINALIGN,
-					ARCH_KMALLOC_FLAGS|SLAB_PANIC,
-					NULL);
+	sizes[INDEX_AC].cs_cachep = create_kmalloc_cache(names[INDEX_AC].name,
+					sizes[INDEX_AC].cs_size, 0);
 
-	list_add(&sizes[INDEX_AC].cs_cachep->list, &slab_caches);
-	if (INDEX_AC != INDEX_L3) {
+	if (INDEX_AC != INDEX_L3)
 		sizes[INDEX_L3].cs_cachep =
-			__kmem_cache_create(names[INDEX_L3].name,
-				sizes[INDEX_L3].cs_size,
-				ARCH_KMALLOC_MINALIGN,
-				ARCH_KMALLOC_FLAGS|SLAB_PANIC,
-				NULL);
-		list_add(&sizes[INDEX_L3].cs_cachep->list, &slab_caches);
-	}
+			create_kmalloc_cache(names[INDEX_L3].name,
+				sizes[INDEX_L3].cs_size, 0);
 
 	slab_early_init = 0;
 
@@ -1700,23 +1715,13 @@ void __init kmem_cache_init(void)
 		 * Note for systems short on memory removing the alignment will
 		 * allow tighter packing of the smaller caches.
 		 */
-		if (!sizes->cs_cachep) {
-			sizes->cs_cachep = __kmem_cache_create(names->name,
-					sizes->cs_size,
-					ARCH_KMALLOC_MINALIGN,
-					ARCH_KMALLOC_FLAGS|SLAB_PANIC,
-					NULL);
-			list_add(&sizes->cs_cachep->list, &slab_caches);
-		}
+		if (!sizes->cs_cachep)
+			sizes->cs_cachep = create_kmalloc_cache(names->name,
+					sizes->cs_size, 0);
+
 #ifdef CONFIG_ZONE_DMA
-		sizes->cs_dmacachep = __kmem_cache_create(
-					names->name_dma,
-					sizes->cs_size,
-					ARCH_KMALLOC_MINALIGN,
-					ARCH_KMALLOC_FLAGS|SLAB_CACHE_DMA|
-						SLAB_PANIC,
-					NULL);
-		list_add(&sizes->cs_dmacachep->list, &slab_caches);
+		sizes->cs_dmacachep = create_kmalloc_cache(
+			names->name_dma, sizes->cs_size, SLAB_CACHE_DMA);
 #endif
 		sizes++;
 		names++;
@@ -2330,38 +2335,14 @@ static int __init_refok setup_cpu_cache(struct kmem_cache *cachep, gfp_t gfp)
 
 /**
  * __kmem_cache_create - Create a cache.
- * @name: A string which is used in /proc/slabinfo to identify this cache.
- * @size: The size of objects to be created in this cache.
- * @align: The required alignment for the objects.
- * @flags: SLAB flags
- * @ctor: A constructor for the objects.
- *
- * Returns a ptr to the cache on success, NULL on failure.
- * Cannot be called within a int, but can be interrupted.
- * The @ctor is run when new pages are allocated by the cache.
- *
- * @name must be valid until the cache is destroyed. This implies that
- * the module calling this has to destroy the cache before getting unloaded.
- *
- * The flags are
- *
- * %SLAB_POISON - Poison the slab with a known test pattern (a5a5a5a5)
- * to catch references to uninitialised memory.
- *
- * %SLAB_RED_ZONE - Insert `Red' zones around the allocated memory to check
- * for buffer overruns.
- *
- * %SLAB_HWCACHE_ALIGN - Align the objects in this cache to a hardware
- * cacheline.  This can be beneficial if you're counting cycles as closely
- * as davem.
  */
-struct kmem_cache *
-__kmem_cache_create (const char *name, size_t size, size_t align,
-	unsigned long flags, void (*ctor)(void *))
+int __kmem_cache_create(struct kmem_cache *cachep)
 {
 	size_t left_over, slab_size, ralign;
-	struct kmem_cache *cachep = NULL;
 	gfp_t gfp;
+	int flags = cachep->flags;
+	int size = cachep->object_size;
+	int align;
 
 #if DEBUG
 #if FORCED_DEBUG
@@ -2433,8 +2414,8 @@ __kmem_cache_create (const char *name, size_t size, size_t align,
 		ralign = ARCH_SLAB_MINALIGN;
 	}
 	/* 3) caller mandated alignment */
-	if (ralign < align) {
-		ralign = align;
+	if (ralign < cachep->align) {
+		ralign = cachep->align;
 	}
 	/* disable debug if necessary */
 	if (ralign > __alignof__(unsigned long long))
@@ -2448,11 +2429,6 @@ __kmem_cache_create (const char *name, size_t size, size_t align,
 		gfp = GFP_KERNEL;
 	else
 		gfp = GFP_NOWAIT;
-
-	/* Get cache's description obj. */
-	cachep = kmem_cache_zalloc(kmem_cache, gfp);
-	if (!cachep)
-		return NULL;
 
 	cachep->nodelists = (struct kmem_list3 **)&cachep->array[nr_cpu_ids];
 	cachep->object_size = size;
@@ -2505,12 +2481,9 @@ __kmem_cache_create (const char *name, size_t size, size_t align,
 
 	left_over = calculate_slab_order(cachep, size, align, flags);
 
-	if (!cachep->num) {
-		printk(KERN_ERR
-		       "kmem_cache_create: couldn't create cache %s.\n", name);
-		kmem_cache_free(kmem_cache, cachep);
-		return NULL;
-	}
+	if (!cachep->num)
+		return -EINVAL;
+
 	slab_size = ALIGN(cachep->num * sizeof(kmem_bufctl_t)
 			  + sizeof(struct slab), align);
 
@@ -2562,13 +2535,10 @@ __kmem_cache_create (const char *name, size_t size, size_t align,
 		 */
 		BUG_ON(ZERO_OR_NULL_PTR(cachep->slabp_cache));
 	}
-	cachep->ctor = ctor;
-	cachep->name = name;
-	cachep->refcount = 1;
 
 	if (setup_cpu_cache(cachep, gfp)) {
 		__kmem_cache_shutdown(cachep);
-		return NULL;
+		return -ENOMEM;
 	}
 
 	if (flags & SLAB_DEBUG_OBJECTS) {
@@ -2581,7 +2551,7 @@ __kmem_cache_create (const char *name, size_t size, size_t align,
 		slab_set_debugobj_lock_classes(cachep);
 	}
 
-	return cachep;
+	return 0;
 }
 
 #if DEBUG

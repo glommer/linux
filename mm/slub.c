@@ -3021,24 +3021,17 @@ static int calculate_sizes(struct kmem_cache *s, int forced_order)
 
 }
 
-static int kmem_cache_open(struct kmem_cache *s,
-		const char *name, size_t size,
-		size_t align, unsigned long flags,
-		void (*ctor)(void *))
+static int kmem_cache_open(struct kmem_cache *s)
 {
-	memset(s, 0, kmem_size);
-	s->name = name;
-	s->ctor = ctor;
-	s->object_size = size;
-	s->align = align;
-	s->flags = kmem_cache_flags(size, flags, name, ctor);
+	s->flags = kmem_cache_flags(s->size, s->flags, s->name, s->ctor);
 	s->reserved = 0;
 
 	if (need_reserve_slab_rcu && (s->flags & SLAB_DESTROY_BY_RCU))
 		s->reserved = sizeof(struct rcu_head);
 
 	if (!calculate_sizes(s, -1))
-		goto error;
+		return -EINVAL;
+
 	if (disable_higher_order_debug) {
 		/*
 		 * Disable debugging flags that store metadata if the min slab
@@ -3048,7 +3041,7 @@ static int kmem_cache_open(struct kmem_cache *s,
 			s->flags &= ~DEBUG_METADATA_FLAGS;
 			s->offset = 0;
 			if (!calculate_sizes(s, -1))
-				goto error;
+				return -EINVAL;
 		}
 	}
 
@@ -3093,23 +3086,16 @@ static int kmem_cache_open(struct kmem_cache *s,
 	else
 		s->cpu_partial = 30;
 
-	s->refcount = 1;
 #ifdef CONFIG_NUMA
 	s->remote_node_defrag_ratio = 1000;
 #endif
 	if (!init_kmem_cache_nodes(s))
-		goto error;
+		return -ENOMEM;
 
-	if (alloc_kmem_cache_cpus(s))
-		return 1;
-
-	free_kmem_cache_nodes(s);
-error:
-	if (flags & SLAB_PANIC)
-		panic("Cannot create slab %s size=%lu realsize=%u "
-			"order=%u offset=%u flags=%lx\n",
-			s->name, (unsigned long)size, s->size, oo_order(s->oo),
-			s->offset, flags);
+	if (!alloc_kmem_cache_cpus(s)) {
+		free_kmem_cache_nodes(s);
+		return -ENOMEM;
+	}
 	return 0;
 }
 
@@ -3251,23 +3237,25 @@ static struct kmem_cache *__init create_kmalloc_cache(const char *name,
 						int size, unsigned int flags)
 {
 	struct kmem_cache *s;
+	int r;
 
-	s = kmem_cache_alloc(kmem_cache, GFP_NOWAIT);
+	s = kmem_cache_zalloc(kmem_cache, GFP_NOWAIT);
+	s->name = name;
+	s->size = s->object_size = size;
+	s->align = ARCH_KMALLOC_MINALIGN;
+	s->flags = flags;
 
 	/*
 	 * This function is called with IRQs disabled during early-boot on
 	 * single CPU so there's no need to take slab_mutex here.
 	 */
-	if (!kmem_cache_open(s, name, size, ARCH_KMALLOC_MINALIGN,
-								flags, NULL))
-		goto panic;
+	r = kmem_cache_open(s);
+	if (r)
+		panic("Creation of kmalloc slab %s size=%d failed. Code %d\n",
+				name, size, r);
 
 	list_add(&s->list, &slab_caches);
 	return s;
-
-panic:
-	panic("Creation of kmalloc slab %s size=%d failed.\n", name, size);
-	return NULL;
 }
 
 /*
@@ -3688,6 +3676,7 @@ static void __init kmem_cache_bootstrap_fixup(struct kmem_cache *s)
 void __init kmem_cache_init(void)
 {
 	int i;
+	int r;
 	int caches = 0;
 	struct kmem_cache *temp_kmem_cache;
 	int order;
@@ -3711,10 +3700,13 @@ void __init kmem_cache_init(void)
 	 * kmem_cache_open for slab_state == DOWN.
 	 */
 	kmem_cache_node = (void *)kmem_cache + kmalloc_size;
+	kmem_cache_node->name = "kmem_cache_node";
+	kmem_cache_node->size = kmem_cache_node->object_size = sizeof(struct kmem_cache_node);
+	kmem_cache_node->flags = SLAB_HWCACHE_ALIGN;
 
-	kmem_cache_open(kmem_cache_node, "kmem_cache_node",
-		sizeof(struct kmem_cache_node),
-		0, SLAB_HWCACHE_ALIGN | SLAB_PANIC, NULL);
+	r = kmem_cache_open(kmem_cache_node);
+	if (r)
+		goto panic;
 
 	hotplug_memory_notifier(slab_memory_callback, SLAB_CALLBACK_PRI);
 
@@ -3722,8 +3714,14 @@ void __init kmem_cache_init(void)
 	slab_state = PARTIAL;
 
 	temp_kmem_cache = kmem_cache;
-	kmem_cache_open(kmem_cache, "kmem_cache", kmem_size,
-		0, SLAB_HWCACHE_ALIGN | SLAB_PANIC, NULL);
+	kmem_cache->name = "kmem_cache";
+	kmem_cache->size = kmem_cache->object_size = kmem_size;
+	kmem_cache->flags = SLAB_HWCACHE_ALIGN;
+
+	r = kmem_cache_open(kmem_cache);
+	if (r)
+		goto panic;
+
 	kmem_cache = kmem_cache_alloc(kmem_cache, GFP_NOWAIT);
 	memcpy(kmem_cache, temp_kmem_cache, kmem_size);
 
@@ -3845,6 +3843,10 @@ void __init kmem_cache_init(void)
 		caches, cache_line_size(),
 		slub_min_order, slub_max_order, slub_min_objects,
 		nr_cpu_ids, nr_node_ids);
+	return;
+
+panic:
+	panic("SLUB bootstrap failed. Code %d\n", r);
 }
 
 void __init kmem_cache_init_late(void)
@@ -3936,29 +3938,22 @@ struct kmem_cache *__kmem_cache_alias(const char *name, size_t size,
 	return s;
 }
 
-struct kmem_cache *__kmem_cache_create(const char *name, size_t size,
-		size_t align, unsigned long flags, void (*ctor)(void *))
+int __kmem_cache_create(struct kmem_cache *s)
 {
-	struct kmem_cache *s;
+	int r = kmem_cache_open(s);
 
-	s = kmalloc(kmem_size, GFP_KERNEL);
-	if (s) {
-		if (kmem_cache_open(s, name,
-				size, align, flags, ctor)) {
-			int r;
+	if (r)
+		return r;
 
-			mutex_unlock(&slab_mutex);
-			r = sysfs_slab_add(s);
-			mutex_lock(&slab_mutex);
+	mutex_unlock(&slab_mutex);
+	r = sysfs_slab_add(s);
+	mutex_lock(&slab_mutex);
 
-			if (!r)
-				return s;
+	if (!r)
+		return 0;
 
-			kmem_cache_close(s);
-		}
-		kfree(s);
-	}
-	return NULL;
+	kmem_cache_close(s);
+	return r;
 }
 
 #ifdef CONFIG_SMP

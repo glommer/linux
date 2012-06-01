@@ -54,6 +54,7 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align
 {
 	struct kmem_cache *s = NULL;
 	char *n;
+	int r;
 
 #ifdef CONFIG_DEBUG_VM
 	if (!name || in_interrupt() || size < sizeof(void *) ||
@@ -106,12 +107,30 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align
 	if (!n)
 		goto oops;
 
-	s = __kmem_cache_create(n, size, align, flags, ctor);
+	s = kmem_cache_zalloc(kmem_cache, GFP_KERNEL);
 
-	if (s)
-		list_add(&s->list, &slab_caches);
-	else
+	if (!s) {
 		kfree(n);
+		goto oops;
+	}
+
+	s->name = n;
+	s->size = s->object_size = size;
+	s->ctor = ctor;
+	s->flags = flags;
+	s->align = align;
+
+	r = __kmem_cache_create(s);
+
+	if (!r) {
+		s->refcount = 1;
+		list_add(&s->list, &slab_caches);
+	}
+	else {
+		kmem_cache_free(kmem_cache, s);
+		kfree(n);
+		s = NULL;
+	}
 
 oops:
 	mutex_unlock(&slab_mutex);
