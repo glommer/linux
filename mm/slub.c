@@ -3198,7 +3198,6 @@ int __kmem_cache_shutdown(struct kmem_cache *s)
 void __kmem_cache_destroy(struct kmem_cache *s)
 {
 	sysfs_slab_remove(s);
-	kfree(s);
 }
 
 /********************************************************************
