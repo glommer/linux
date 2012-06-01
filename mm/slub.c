@@ -3935,10 +3935,6 @@ struct kmem_cache *__kmem_cache_create(const char *name, size_t size,
 		return s;
 	}
 
-	n = kstrdup(name, GFP_KERNEL);
-	if (!n)
-		return NULL;
-
 	s = kmalloc(kmem_size, GFP_KERNEL);
 	if (s) {
 		if (kmem_cache_open(s, n,
@@ -3956,7 +3952,6 @@ struct kmem_cache *__kmem_cache_create(const char *name, size_t size,
 		}
 		kfree(s);
 	}
-	kfree(n);
 	return NULL;
 }
 
@@ -5191,7 +5186,6 @@ static void kmem_cache_release(struct kobject *kobj)
 {
 	struct kmem_cache *s = to_slab(kobj);
 
-	kfree(s->name);
 	kfree(s);
 }
 
