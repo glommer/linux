@@ -38,6 +38,5 @@ struct kmem_cache *__kmem_cache_create(const char *name, size_t size,
 
 int __kmem_cache_initcall(void);
 int __kmem_cache_shutdown(struct kmem_cache *);
-void __kmem_cache_destroy(struct kmem_cache *);
 
 #endif
