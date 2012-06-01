@@ -2746,32 +2746,6 @@ static inline int calculate_order(int size, int reserved)
 	return -ENOSYS;
 }
 
-/*
- * Figure out what the alignment of the objects will be.
- */
-static unsigned long calculate_alignment(unsigned long flags,
-		unsigned long align, unsigned long size)
-{
-	/*
-	 * If the user wants hardware cache aligned objects then follow that
-	 * suggestion if the object is sufficiently large.
-	 *
-	 * The hardware cache alignment cannot override the specified
-	 * alignment though. If that is greater then use it.
-	 */
-	if (flags & SLAB_HWCACHE_ALIGN) {
-		unsigned long ralign = cache_line_size();
-		while (size <= ralign / 2)
-			ralign /= 2;
-		align = max(align, ralign);
-	}
-
-	if (align < ARCH_SLAB_MINALIGN)
-		align = ARCH_SLAB_MINALIGN;
-
-	return ALIGN(align, sizeof(void *));
-}
-
 static void
 init_kmem_cache_node(struct kmem_cache_node *n)
 {
@@ -2977,14 +2951,6 @@ static int calculate_sizes(struct kmem_cache *s, int forced_order)
 #endif
 
 	/*
-	 * Determine the alignment based on various parameters that the
-	 * user specified and the dynamic determination of cache line size
-	 * on bootup.
-	 */
-	align = calculate_alignment(flags, align, s->object_size);
-	s->align = align;
-
-	/*
 	 * SLUB stores one object immediately after another beginning from
 	 * offset 0. In order to align the objects we have to simply size
 	 * each object to conform to the alignment.
@@ -3018,7 +2984,6 @@ static int calculate_sizes(struct kmem_cache *s, int forced_order)
 		s->max = s->oo;
 
 	return !!oo_objects(s->oo);
-
 }
 
 static int kmem_cache_open(struct kmem_cache *s)
@@ -3242,7 +3207,7 @@ static struct kmem_cache *__init create_kmalloc_cache(const char *name,
 	s = kmem_cache_zalloc(kmem_cache, GFP_NOWAIT);
 	s->name = name;
 	s->size = s->object_size = size;
-	s->align = ARCH_KMALLOC_MINALIGN;
+	s->align = calculate_alignment(flags, ARCH_KMALLOC_MINALIGN, size);
 	s->flags = flags;
 
 	/*
@@ -3703,6 +3668,8 @@ void __init kmem_cache_init(void)
 	kmem_cache_node->name = "kmem_cache_node";
 	kmem_cache_node->size = kmem_cache_node->object_size = sizeof(struct kmem_cache_node);
 	kmem_cache_node->flags = SLAB_HWCACHE_ALIGN;
+	kmem_cache_node->align = calculate_alignment(SLAB_HWCACHE_ALIGN,
+					0, sizeof(struct kmem_cache_node));
 
 	r = kmem_cache_open(kmem_cache_node);
 	if (r)
@@ -3717,6 +3684,8 @@ void __init kmem_cache_init(void)
 	kmem_cache->name = "kmem_cache";
 	kmem_cache->size = kmem_cache->object_size = kmem_size;
 	kmem_cache->flags = SLAB_HWCACHE_ALIGN;
+	kmem_cache->align = calculate_alignment(SLAB_HWCACHE_ALIGN,
+					0, sizeof(struct kmem_cache));
 
 	r = kmem_cache_open(kmem_cache);
 	if (r)
@@ -3940,7 +3909,9 @@ struct kmem_cache *__kmem_cache_alias(const char *name, size_t size,
 
 int __kmem_cache_create(struct kmem_cache *s)
 {
-	int r = kmem_cache_open(s);
+	int r;
+
+	r = kmem_cache_open(s);
 
 	if (r)
 		return r;
