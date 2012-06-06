@@ -16,6 +16,7 @@
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
 #include <asm/page.h>
+#include <linux/memcontrol.h>
 
 #include "slab.h"
 
@@ -77,8 +78,9 @@ unsigned long calculate_alignment(unsigned long flags,
  * as davem.
  */
 
-struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align,
-		unsigned long flags, void (*ctor)(void *))
+struct kmem_cache *
+kmem_cache_create_memcg(struct mem_cgroup *memcg, const char *name, size_t size,
+			size_t align, unsigned long flags, void (*ctor)(void *))
 {
 	struct kmem_cache *s = NULL;
 	char *n;
@@ -114,7 +116,7 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align
 			continue;
 		}
 
-		if (!strcmp(s->name, name)) {
+		if (cache_match_memcg(s, memcg) && !strcmp(s->name, name)) {
 			printk(KERN_ERR "kmem_cache_create(%s): Cache name"
 				" already exists.\n",
 				name);
@@ -127,7 +129,7 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align
 	WARN_ON(strchr(name, ' '));	/* It confuses parsers */
 #endif
 
-	s = __kmem_cache_alias(name, size, align, flags, ctor);
+	s = __kmem_cache_alias(memcg, name, size, align, flags, ctor);
 	if (s)
 		goto oops;
 
@@ -148,11 +150,17 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align
 	s->flags = flags;
 	s->align = calculate_alignment(flags, align, size);
 
+#ifdef CONFIG_MEMCG_KMEM
+	s->memcg_params.memcg = memcg;
+#endif
+
 	r = __kmem_cache_create(s);
 
 	if (!r) {
 		s->refcount = 1;
 		list_add(&s->list, &slab_caches);
+		if (slab_state >= FULL)
+			memcg_register_cache(memcg, s);
 	}
 	else {
 		kmem_cache_free(kmem_cache, s);
@@ -172,6 +180,12 @@ out:
 
 	return s;
 }
+
+struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align,
+		unsigned long flags, void (*ctor)(void *))
+{
+	return kmem_cache_create_memcg(NULL, name, size, align, flags, ctor);
+}
 EXPORT_SYMBOL(kmem_cache_create);
 
 void kmem_cache_destroy(struct kmem_cache *s)
@@ -184,6 +198,7 @@ void kmem_cache_destroy(struct kmem_cache *s)
 		if (s->flags & SLAB_DESTROY_BY_RCU)
 			rcu_barrier();
 
+		memcg_release_cache(s);
 		kfree(s->name);
 		kmem_cache_free(kmem_cache, s);
 	} else {
@@ -204,6 +219,17 @@ int slab_is_available(void)
 
 static int __init kmem_cache_initcall(void)
 {
-	return __kmem_cache_initcall();
+	int r = __kmem_cache_initcall();
+#ifdef CONFIG_MEMCG_KMEM
+	struct kmem_cache *s;
+
+	if (r)
+		return r;
+	mutex_lock(&slab_mutex);
+	list_for_each_entry(s, &slab_caches, list)
+		memcg_register_cache(NULL, s);
+	mutex_unlock(&slab_mutex);
+#endif
+	return r;
 }
 __initcall(kmem_cache_initcall);

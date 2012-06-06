@@ -28,6 +28,7 @@ struct mem_cgroup;
 struct page_cgroup;
 struct page;
 struct mm_struct;
+struct kmem_cache;
 
 /* Stats that can be updated by kernel. */
 enum mem_cgroup_page_stat_item {
@@ -412,7 +413,20 @@ bool __memcg_kmem_charge_page(gfp_t gfp, struct mem_cgroup **memct, int order);
 void __memcg_kmem_commit_page(struct page *page, struct mem_cgroup *memcg,
 			      int order);
 void __memcg_kmem_free_page(struct page *page, int order);
+int memcg_css_id(struct mem_cgroup *memcg);
+void memcg_register_cache(struct mem_cgroup *memcg,
+				      struct kmem_cache *s);
+void memcg_release_cache(struct kmem_cache *cachep);
 #else
+static inline void memcg_register_cache(struct mem_cgroup *memcg,
+					     struct kmem_cache *s)
+{
+}
+
+static inline void memcg_release_cache(struct kmem_cache *cachep)
+{
+}
+
 static inline void sock_update_memcg(struct sock *sk)
 {
 }
