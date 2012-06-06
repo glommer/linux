@@ -371,6 +371,11 @@ static void memcg_kmem_clear_account_parent(struct mem_cgroup *memcg)
 {
 	clear_bit(KMEM_ACCOUNTED_PARENT, &memcg->kmem_accounted);
 }
+
+int memcg_css_id(struct mem_cgroup *memcg)
+{
+	return css_id(&memcg->css);
+}
 #endif /* CONFIG_MEMCG_KMEM */
 
 /* Stuffs for move charges at task migration. */
@@ -525,6 +530,24 @@ static inline bool memcg_kmem_enabled(struct mem_cgroup *memcg)
 {
 	return !mem_cgroup_disabled() && !mem_cgroup_is_root(memcg) &&
 		memcg->kmem_accounted;
+}
+
+struct ida cache_types;
+
+void memcg_register_cache(struct mem_cgroup *memcg, struct kmem_cache *cachep)
+{
+	int id = -1;
+
+	if (!memcg)
+		id = ida_simple_get(&cache_types, 0, MAX_KMEM_CACHE_TYPES,
+				    GFP_KERNEL);
+	cachep->memcg_params.id = id;
+}
+
+void memcg_release_cache(struct kmem_cache *cachep)
+{
+	if (cachep->memcg_params.id != -1)
+		ida_simple_remove(&cache_types, cachep->memcg_params.id);
 }
 
 /*
@@ -5190,6 +5213,7 @@ mem_cgroup_create(struct cgroup *cont)
 #ifdef CONFIG_MEMCG_KMEM
 		WARN_ON(cgroup_add_cftypes(&mem_cgroup_subsys,
 					   kmem_cgroup_files));
+		ida_init(&cache_types);
 #endif
 
 		if (mem_cgroup_soft_limit_tree_init())
