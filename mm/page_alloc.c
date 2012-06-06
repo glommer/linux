@@ -2479,6 +2479,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 	struct page *page = NULL;
 	int migratetype = allocflags_to_migratetype(gfp_mask);
 	unsigned int cpuset_mems_cookie;
+	void *handle = NULL;
 
 	gfp_mask &= gfp_allowed_mask;
 
@@ -2487,6 +2488,13 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 	might_sleep_if(gfp_mask & __GFP_WAIT);
 
 	if (should_fail_alloc_page(gfp_mask, order))
+		return NULL;
+
+	/*
+	 * Will only have any effect when __GFP_KMEMCG is set.
+	 * This is verified in the (always inline) callee
+	 */
+	if (!memcg_kmem_new_page(gfp_mask, &handle, order))
 		return NULL;
 
 	/*
@@ -2527,6 +2535,8 @@ out:
 	 */
 	if (unlikely(!put_mems_allowed(cpuset_mems_cookie) && !page))
 		goto retry_cpuset;
+
+	memcg_kmem_commit_page(page, handle, order);
 
 	return page;
 }
@@ -2579,6 +2589,34 @@ void free_pages(unsigned long addr, unsigned int order)
 }
 
 EXPORT_SYMBOL(free_pages);
+
+/*
+ * __free_accounted_pages and free_accounted_pages will free pages allocated
+ * with __GFP_KMEMCG.
+ *
+ * Those pages are accounted to a particular memcg, embedded in the
+ * corresponding page_cgroup. To avoid adding a hit in the allocator to search
+ * for that information only to find out that it is NULL for users who have no
+ * interest in that whatsoever, we provide these functions.
+ *
+ * The caller knows better which flags it relies on.
+ */
+void __free_accounted_pages(struct page *page, unsigned int order)
+{
+	memcg_kmem_free_page(page, order);
+	__free_pages(page, order);
+}
+EXPORT_SYMBOL(__free_accounted_pages);
+
+void free_accounted_pages(unsigned long addr, unsigned int order)
+{
+	if (addr != 0) {
+		VM_BUG_ON(!virt_addr_valid((void *)addr));
+		memcg_kmem_free_page(virt_to_page((void *)addr), order);
+		__free_pages(virt_to_page((void *)addr), order);
+	}
+}
+EXPORT_SYMBOL(free_accounted_pages);
 
 static void *make_alloc_exact(unsigned long addr, unsigned order, size_t size)
 {
