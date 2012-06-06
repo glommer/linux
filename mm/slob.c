@@ -628,3 +628,8 @@ void __init kmem_cache_init_late(void)
 {
 	slab_state = FULL;
 }
+
+int __init __kmem_cache_initcall(void)
+{
+	return 0;
+}

@@ -116,3 +116,9 @@ int slab_is_available(void)
 {
 	return slab_state >= UP;
 }
+
+static int __init kmem_cache_initcall(void)
+{
+	return __kmem_cache_initcall();
+}
+__initcall(kmem_cache_initcall);
