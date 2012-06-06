@@ -80,7 +80,8 @@ unsigned long calculate_alignment(unsigned long flags,
 
 struct kmem_cache *
 kmem_cache_create_memcg(struct mem_cgroup *memcg, const char *name, size_t size,
-			size_t align, unsigned long flags, void (*ctor)(void *))
+			size_t align, unsigned long flags, void (*ctor)(void *),
+			struct kmem_cache *parent_cache)
 {
 	struct kmem_cache *s = NULL;
 	char *n;
@@ -149,9 +150,9 @@ kmem_cache_create_memcg(struct mem_cgroup *memcg, const char *name, size_t size,
 	s->ctor = ctor;
 	s->flags = flags;
 	s->align = calculate_alignment(flags, align, size);
-
 #ifdef CONFIG_MEMCG_KMEM
 	s->memcg_params.memcg = memcg;
+	s->memcg_params.parent = parent_cache;
 #endif
 
 	r = __kmem_cache_create(s);
@@ -184,7 +185,7 @@ out:
 struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align,
 		unsigned long flags, void (*ctor)(void *))
 {
-	return kmem_cache_create_memcg(NULL, name, size, align, flags, ctor);
+	return kmem_cache_create_memcg(NULL, name, size, align, flags, ctor, NULL);
 }
 EXPORT_SYMBOL(kmem_cache_create);
 
