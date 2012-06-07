@@ -186,6 +186,9 @@ struct mem_cgroup_cache_params {
 	struct mem_cgroup *memcg;
 	struct kmem_cache *parent;
 	int id;
+	bool dead;
+	atomic_t nr_pages;
+	struct list_head destroyed_list; /* Used when deleting memcg cache */
 };
 #endif
 
