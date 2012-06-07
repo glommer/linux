@@ -151,6 +151,7 @@ kmem_cache_create_memcg(struct mem_cgroup *memcg, const char *name, size_t size,
 	s->flags = flags;
 	s->align = calculate_alignment(flags, align, size);
 #ifdef CONFIG_MEMCG_KMEM
+	s->memcg_params.id = -1; /* not registered yet */
 	s->memcg_params.memcg = memcg;
 	s->memcg_params.parent = parent_cache;
 #endif
