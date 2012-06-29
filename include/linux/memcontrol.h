@@ -417,6 +417,8 @@ int memcg_css_id(struct mem_cgroup *memcg);
 void memcg_register_cache(struct mem_cgroup *memcg,
 				      struct kmem_cache *s);
 void memcg_release_cache(struct kmem_cache *cachep);
+struct kmem_cache *
+__memcg_kmem_get_cache(struct kmem_cache *cachep, gfp_t gfp);
 #else
 static inline void memcg_register_cache(struct mem_cgroup *memcg,
 					     struct kmem_cache *s)
@@ -452,6 +454,12 @@ static inline void  __memcg_kmem_free_page(struct page *page, int order)
 static inline void
 __memcg_kmem_commit_page(struct page *page, struct mem_cgroup *memcg, int order)
 {
+}
+
+static inline struct kmem_cache *
+__memcg_kmem_get_cache(struct kmem_cache *cachep, gfp_t gfp)
+{
+	return cachep;
 }
 #endif /* CONFIG_MEMCG_KMEM */
 
@@ -518,6 +526,36 @@ memcg_kmem_commit_page(struct page *page, struct mem_cgroup *memcg, int order)
 {
 	if (memcg_kmem_enabled() && memcg)
 		__memcg_kmem_commit_page(page, memcg, order);
+}
+
+/**
+ * memcg_kmem_get_kmem_cache: selects the correct per-memcg cache for allocation
+ * @cachep: the original global kmem cache
+ * @gfp: allocation flags.
+ *
+ * This function assumes that the task allocating, which determines the memcg
+ * in the page allocator, belongs to the same cgroup throughout the whole
+ * process.  Misacounting can happen if the task calls memcg_kmem_get_cache()
+ * while belonging to a cgroup, and later on changes. This is considered
+ * acceptable, and should only happen upon task migration.
+ *
+ * Before the cache is created by the memcg core, there is also a possible
+ * imbalance: the task belongs to a memcg, but the cache being allocated from
+ * is the global cache, since the child cache is not yet guaranteed to be
+ * ready. This case is also fine, since in this case the GFP_KMEMCG will not be
+ * passed and the page allocator will not attempt any cgroup accounting.
+ */
+static __always_inline struct kmem_cache *
+memcg_kmem_get_cache(struct kmem_cache *cachep, gfp_t gfp)
+{
+	if (!memcg_kmem_enabled())
+		return cachep;
+	if (gfp & __GFP_NOFAIL)
+		return cachep;
+	if (in_interrupt() || (!current->mm) || (current->flags & PF_KTHREAD))
+		return cachep;
+
+	return __memcg_kmem_get_cache(cachep, gfp);
 }
 #endif /* _LINUX_MEMCONTROL_H */
 
