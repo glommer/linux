@@ -2344,6 +2344,7 @@ int __kmem_cache_create(struct kmem_cache *cachep)
 	int size = cachep->object_size;
 	int align;
 
+	flags &= ~CFLGS_OFF_SLAB;
 #if DEBUG
 #if FORCED_DEBUG
 	/*
