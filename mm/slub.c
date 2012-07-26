@@ -5154,6 +5154,10 @@ static ssize_t slab_attr_store(struct kobject *kobj,
 	struct slab_attribute *attribute;
 	struct kmem_cache *s;
 	int err;
+#ifdef CONFIG_MEMCG_KMEM
+	struct kmem_cache *c;
+	struct mem_cgroup_cache_params *p;
+#endif
 
 	attribute = to_slab_attr(attr);
 	s = to_slab(kobj);
@@ -5162,7 +5166,19 @@ static ssize_t slab_attr_store(struct kobject *kobj,
 		return -EIO;
 
 	err = attribute->store(s, buf, len);
+#ifdef CONFIG_MEMCG_KMEM
+	if (slab_state < FULL)
+		return err;
 
+	if ((err < 0) || (s->memcg_params.id == -1))
+		return err;
+
+	list_for_each_entry(p, &s->memcg_params.sibling_list, sibling_list) {
+		c = container_of(p, struct kmem_cache, memcg_params);
+		/* return value determined by the parent cache only */
+		attribute->store(c, buf, len);
+	}
+#endif
 	return err;
 }
 
