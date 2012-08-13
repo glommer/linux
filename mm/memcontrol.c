@@ -5170,6 +5170,16 @@ static void free_work(struct work_struct *work)
 		vfree(memcg);
 }
 
+/*
+ * At destroying mem_cgroup, references from swap_cgroup and other places can
+ * remain.  (scanning all at force_empty is too costly...)
+ *
+ * Instead of clearing all references at force_empty, we remember
+ * the number of reference from swap_cgroup and free mem_cgroup when
+ * it goes down to 0.
+ *
+ * Removal of cgroup itself succeeds regardless of refs from swap.
+ */
 static void free_rcu(struct rcu_head *rcu_head)
 {
 	struct mem_cgroup *memcg;
@@ -5178,17 +5188,6 @@ static void free_rcu(struct rcu_head *rcu_head)
 	INIT_WORK(&memcg->work_freeing, free_work);
 	schedule_work(&memcg->work_freeing);
 }
-
-/*
- * At destroying mem_cgroup, references from swap_cgroup can remain.
- * (scanning all at force_empty is too costly...)
- *
- * Instead of clearing all references at force_empty, we remember
- * the number of reference from swap_cgroup and free mem_cgroup when
- * it goes down to 0.
- *
- * Removal of cgroup itself succeeds regardless of refs from swap.
- */
 
 static void __mem_cgroup_free(struct mem_cgroup *memcg)
 {
@@ -5201,7 +5200,6 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
 		free_mem_cgroup_per_zone_info(memcg, node);
 
 	free_percpu(memcg->stat);
-	call_rcu(&memcg->rcu_freeing, free_rcu);
 }
 
 static void mem_cgroup_get(struct mem_cgroup *memcg)
@@ -5213,7 +5211,7 @@ static void __mem_cgroup_put(struct mem_cgroup *memcg, int count)
 {
 	if (atomic_sub_and_test(count, &memcg->refcnt)) {
 		struct mem_cgroup *parent = parent_mem_cgroup(memcg);
-		__mem_cgroup_free(memcg);
+		call_rcu(&memcg->rcu_freeing, free_rcu);
 		if (parent)
 			mem_cgroup_put(parent);
 	}
@@ -5378,6 +5376,7 @@ static void mem_cgroup_destroy(struct cgroup *cont)
 
 	kmem_cgroup_destroy(memcg);
 
+	__mem_cgroup_free(memcg);
 	mem_cgroup_put(memcg);
 }
 
