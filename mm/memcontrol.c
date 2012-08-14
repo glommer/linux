@@ -344,6 +344,8 @@ struct mem_cgroup {
 enum {
 	KMEM_ACCOUNTED_THIS, /* accounted by this cgroup itself */
 	KMEM_ACCOUNTED_PARENT, /* accounted by any of its parents. */
+	KMEM_ACCOUNTED_STARTED, /* will be set on first charge */
+	KMEM_ACCOUNTED_DEAD, /* dead memcg, pending kmem charges */
 };
 
 #ifdef CONFIG_MEMCG_KMEM
@@ -370,6 +372,32 @@ static void memcg_kmem_account_parent(struct mem_cgroup *memcg)
 static void memcg_kmem_clear_account_parent(struct mem_cgroup *memcg)
 {
 	clear_bit(KMEM_ACCOUNTED_PARENT, &memcg->kmem_accounted);
+}
+
+/*
+ * To avoid doing a get/put pair in every charge, we'll just issue get over the
+ * first charge to the group. We use a separate test_bit before test_and_set
+ * because it will be a simple read without locking the bus. Also being a
+ * likely set bit will make the performance impact low in most situations
+ */
+static bool memcg_kmem_first_charge(struct mem_cgroup *memcg)
+{
+	if (likely(test_bit(KMEM_ACCOUNTED_STARTED, &memcg->kmem_accounted)))
+		return false;
+
+	return !test_and_set_bit(KMEM_ACCOUNTED_STARTED,
+				 &memcg->kmem_accounted);
+}
+
+static void memcg_kmem_mark_dead(struct mem_cgroup *memcg)
+{
+	if (test_bit(KMEM_ACCOUNTED_STARTED, &memcg->kmem_accounted))
+		set_bit(KMEM_ACCOUNTED_DEAD, &memcg->kmem_accounted);
+}
+
+static bool memcg_kmem_dead(struct mem_cgroup *memcg)
+{
+	return test_and_clear_bit(KMEM_ACCOUNTED_DEAD, &memcg->kmem_accounted);
 }
 #endif /* CONFIG_MEMCG_KMEM */
 
@@ -558,12 +586,9 @@ bool __memcg_kmem_charge_page(gfp_t gfp, struct mem_cgroup **_memcg, int order)
 	if (!memcg_can_account_kmem(memcg))
 		goto out;
 
-	mem_cgroup_get(memcg);
-
 	size = PAGE_SIZE << order;
 	ret = memcg_charge_kmem(memcg, gfp, size) == 0;
 	if (!ret) {
-		mem_cgroup_put(memcg);
 		goto out;
 	}
 
@@ -584,7 +609,6 @@ void __memcg_kmem_commit_page(struct page *page, struct mem_cgroup *memcg,
 		size_t size = PAGE_SIZE << order;
 
 		memcg_uncharge_kmem(memcg, size);
-		mem_cgroup_put(memcg);
 		return;
 	}
 
@@ -628,7 +652,6 @@ void __memcg_kmem_free_page(struct page *page, int order)
 	WARN_ON(mem_cgroup_is_root(memcg));
 	size = PAGE_SIZE << order;
 	memcg_uncharge_kmem(memcg, size);
-	mem_cgroup_put(memcg);
 }
 
 static void disarm_kmem_keys(struct mem_cgroup *memcg)
@@ -4930,6 +4953,20 @@ static int memcg_init_kmem(struct mem_cgroup *memcg, struct cgroup_subsys *ss)
 static void kmem_cgroup_destroy(struct mem_cgroup *memcg)
 {
 	mem_cgroup_sockets_destroy(memcg);
+
+	memcg_kmem_mark_dead(memcg);
+
+	if (res_counter_read_u64(&memcg->kmem, RES_USAGE) != 0)
+		return;
+
+	/*
+	 * Charges already down to 0, undo mem_cgroup_get() done in the charge
+	 * path here, being careful not to race with memcg_uncharge_kmem: it is
+	 * possible that the charges went down to 0 between mark_dead and the
+	 * res_counter read, so in that case, we don't need the put
+	 */
+	if (memcg_kmem_dead(memcg))
+		mem_cgroup_put(memcg);
 }
 #else
 static int memcg_init_kmem(struct mem_cgroup *memcg, struct cgroup_subsys *ss)
@@ -6000,7 +6037,8 @@ int memcg_charge_kmem(struct mem_cgroup *memcg, gfp_t gfp, u64 size)
 		res_counter_uncharge(&memcg->res, size);
 		if (do_swap_account)
 			res_counter_uncharge(&memcg->memsw, size);
-	}
+	} else if (memcg_kmem_first_charge(memcg))
+		mem_cgroup_get(memcg);
 
 	return ret;
 }
@@ -6010,9 +6048,15 @@ void memcg_uncharge_kmem(struct mem_cgroup *memcg, u64 size)
 	if (!memcg)
 		return;
 
-	res_counter_uncharge(&memcg->kmem, size);
 	res_counter_uncharge(&memcg->res, size);
 	if (do_swap_account)
 		res_counter_uncharge(&memcg->memsw, size);
+
+	/* Not down to 0 */
+	if (res_counter_uncharge(&memcg->kmem, size))
+		return;
+
+	if (memcg_kmem_dead(memcg))
+		mem_cgroup_put(memcg);
 }
 #endif /* CONFIG_MEMCG_KMEM */
